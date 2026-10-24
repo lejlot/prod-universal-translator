@@ -1,0 +1,33 @@
+{
+  "package_id": "com.personal.g2hud",
+  "edition": "202601",
+  "name": "Universal Translator",
+  "version": "0.2.11",
+  "min_app_version": "2.2.10",
+  "min_sdk_version": "0.0.16",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Listens to the conversation for live translation."
+    },
+    {
+      "name": "phone-microphone",
+      "desc": "Optional: use the phone microphone instead of the glasses."
+    },
+    {
+      "name": "network",
+      "desc": "Speech and translation and its balance (Soniox), and suggested replies (Anthropic).",
+      "whitelist": [
+        "wss://stt-rt.soniox.com",
+        "https://stt-rt.soniox.com",
+        "https://api.soniox.com",
+        "https://api.anthropic.com"
+      ]
+    }
+  ],
+  "supported_languages": [
+    "en",
+    "es"
+  ]
+}

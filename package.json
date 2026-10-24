@@ -1,0 +1,28 @@
+{
+  "name": "universal-translator",
+  "private": true,
+  "version": "0.2.11",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "pack": "npm run build && evenhub pack app.json dist -o universal-translator.ehpk"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@evenrealities/even_hub_sdk": "^0.0.16",
+    "@evenrealities/pretext": "^0.1.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.14",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4"
+  },
+  "description": "Live translation and suggested replies for Even Realities G2 glasses and the R1 ring.",
+  "engines": {
+    "node": "24.x"
+  }
+}
