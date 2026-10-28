@@ -1,13 +1,13 @@
 {
   "name": "universal-translator",
   "private": true,
-  "version": "0.2.11",
+  "version": "0.3.2",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "pack": "npm run build && evenhub pack app.json dist -o universal-translator.ehpk"
+    "pack": "node scripts/pack.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

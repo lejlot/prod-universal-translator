@@ -25,7 +25,7 @@ export type SttState = 'idle' | 'connecting' | 'live' | 'error';
 export interface SttOptions {
     apiKey: string;
     languageHints: string[];
-    targetLanguage: string;
+    targetLanguage?: string;
 }
 export class SonioxStream {
     readonly responses = new Emitter<SonioxResponse>();
@@ -111,6 +111,10 @@ export class SonioxStream {
         ws.binaryType = 'arraybuffer';
         this.ws = ws;
         ws.onopen = () => {
+            if (this.ws !== ws) {
+                ws.close();
+                return;
+            }
             ws.send(JSON.stringify({
                 model: MODEL,
                 audio_format: 'pcm_s16le',
@@ -120,7 +124,7 @@ export class SonioxStream {
                 enable_language_identification: true,
                 enable_endpoint_detection: true,
                 max_endpoint_delay_ms: 1500,
-                translation: { type: 'one_way', target_language: opts.targetLanguage },
+                ...(opts.targetLanguage ? { translation: { type: 'one_way', target_language: opts.targetLanguage } } : {}),
                 client_reference_id: 'universal-translator',
             }));
             this.retry = 0;
@@ -138,6 +142,8 @@ export class SonioxStream {
             }, 10000);
         };
         ws.onmessage = ev => {
+            if (this.ws !== ws)
+                return;
             if (typeof ev.data !== 'string')
                 return;
             let msg: SonioxResponse;

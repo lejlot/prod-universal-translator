@@ -7,6 +7,8 @@ export interface Settings {
     anthropicKey: string;
     claudeModel: string;
     sourceLang: string;
+    mainLang: string;
+    shareLocation: boolean;
     micSource: MicSource;
     ignoreOwnVoice: boolean;
     swipeViews: boolean;
@@ -19,11 +21,13 @@ export const DEFAULT_SETTINGS: Settings = {
     anthropicKey: '',
     claudeModel: 'claude-opus-5-5',
     sourceLang: 'es',
+    mainLang: 'en',
+    shareLocation: true,
     micSource: 'glasses',
     ignoreOwnVoice: false,
     swipeViews: true,
     speechGate: true,
-    schema: 12,
+    schema: 13,
 };
 export class SettingsStore {
     readonly changed = new Emitter<Settings>();
@@ -76,6 +80,11 @@ export class SettingsStore {
                 bridgeCode?: string;
             }).bridgeCode;
             saved.schema = 12;
+        }
+        if (saved.schema < 13) {
+            saved.mainLang = 'en';
+            saved.shareLocation = true;
+            saved.schema = 13;
         }
         if (saved.schema !== loadedSchema)
             this.store.save('settings', saved, 0);

@@ -83,7 +83,8 @@ h2::before { content: '// '; color: var(--dim); }
 .mirror .p.list div.sel { outline: 2px solid var(--glass); outline-offset: -3px; }
 .mirror img:not([src]) { display: none; }
 .mirror img { position: absolute; image-rendering: pixelated; filter: sepia(1) hue-rotate(60deg) saturate(6) brightness(1.1); mix-blend-mode: screen; }
-.controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; }
+.controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.voice-history { overflow-wrap: anywhere; }
 .menu-items { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
 button, .btn {

@@ -10,7 +10,7 @@ export class Emitter<T = void> {
                 fn(value);
             }
             catch (err) {
-                console.error(err);
+                void 0;
             }
         }
     }

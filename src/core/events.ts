@@ -53,6 +53,9 @@ export function parseHubEvent(event: EvenHubEvent): HubSignal | null {
         if (t === OsEventTypeList.DOUBLE_CLICK_EVENT) {
             return { type: 'gesture', fromList: true, gesture: { kind: 'double', source: 'unknown' } };
         }
+        if (t === OsEventTypeList.LONG_PRESS_EVENT || t === OsEventTypeList.LONG_PRESS_RELEASE_EVENT) {
+            return { type: 'gesture', fromList: true, gesture: { kind: t === OsEventTypeList.LONG_PRESS_EVENT ? 'hold' : 'release', source: 'unknown' } };
+        }
         return null;
     }
     if (event.textEvent) {
@@ -65,7 +68,11 @@ export function parseHubEvent(event: EvenHubEvent): HubSignal | null {
                     ? 'double'
                     : t === OsEventTypeList.CLICK_EVENT
                         ? 'tap'
-                        : null;
+                        : t === OsEventTypeList.LONG_PRESS_EVENT
+                            ? 'hold'
+                            : t === OsEventTypeList.LONG_PRESS_RELEASE_EVENT
+                                ? 'release'
+                                : null;
         return kind ? { type: 'gesture', fromList: false, gesture: { kind, source: 'unknown' } } : null;
     }
     if (event.sysEvent) {

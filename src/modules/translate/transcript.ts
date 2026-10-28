@@ -37,6 +37,11 @@ export class Transcript {
         this.lang = defaultSource;
         this.partnerLang = defaultSource;
     }
+    configure(targetLang: string, defaultSource: string) {
+        this.clear();
+        this.targetLang = targetLang;
+        this.lang = this.partnerLang = defaultSource;
+    }
     filter: (t: SonioxToken) => boolean = () => true;
     apply(resp: SonioxResponse): boolean {
         const tokens = resp.tokens ?? [];
@@ -187,14 +192,17 @@ export class Transcript {
         return { original: this.original, english: this.english, lang: this.lang, partnerLang: this.partnerLang };
     }
     dump() {
-        return { o: this.origFinal.slice(-1500), e: this.engFinal.slice(-1500), l: this.lang, p: this.partnerLang };
+        return { o: this.origFinal.slice(-1500), e: this.engFinal.slice(-1500), l: this.lang, p: this.partnerLang, target: this.targetLang };
     }
     restore(d: {
         o?: string;
         e?: string;
         l?: string;
         p?: string;
+        target?: string;
     }) {
+        if ((d.target ?? 'en') !== this.targetLang)
+            return;
         this.origFinal = d.o ?? '';
         this.engFinal = d.e ?? '';
         const o = this.origFinal.split('\n');

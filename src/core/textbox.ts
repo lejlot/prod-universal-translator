@@ -74,10 +74,22 @@ export function wrapMax(text: string, width: number, max: number, measure: Measu
 }
 export class ScrollBox {
     private start = 0;
+    private latest = '';
+    private width = 0;
+    private capacity = 0;
+    private measure: Measure = s => s.length;
+    private browsing: string[] | null = null;
+    private offset = 0;
     private top = '';
     lines(text: string, width: number, capacity: number, measure: Measure): string[] {
         if (capacity < 1)
             return [];
+        this.latest = text;
+        this.width = width;
+        this.capacity = capacity;
+        this.measure = measure;
+        if (this.browsing)
+            return this.browsing.slice(this.offset, this.offset + capacity);
         this.start = this.locate(text);
         let lines = wrap(text.slice(this.start), width, measure);
         if (lines.length > capacity) {
@@ -88,6 +100,21 @@ export class ScrollBox {
         const end = lines.length > 1 ? lines[1].start : text.length - this.start;
         this.top = text.slice(this.start, this.start + end).trimEnd();
         return lines.map(l => l.text);
+    }
+    scroll(delta: number) {
+        if (!this.capacity)
+            return;
+        if (!this.browsing) {
+            const lines = wrap(this.latest, this.width, this.measure);
+            this.browsing = lines.map(l => l.text);
+            this.offset = 0;
+            for (let i = 0; i < lines.length && lines[i].start <= this.start; i++)
+                this.offset = i;
+        }
+        const end = Math.max(0, this.browsing.length - this.capacity);
+        this.offset = Math.max(0, Math.min(end, this.offset + delta));
+        if (delta > 0 && this.offset === end)
+            this.browsing = null;
     }
     private locate(text: string): number {
         if (!this.top)
@@ -100,5 +127,26 @@ export class ScrollBox {
     reset() {
         this.start = 0;
         this.top = '';
+        this.latest = '';
+        this.browsing = null;
+        this.offset = 0;
+    }
+}
+export class ReadingBox<T> {
+    private key = '';
+    private content: T[] = [];
+    private capacity = 0;
+    private offset = 0;
+    lines(key: string, content: T[], capacity: number): T[] {
+        if (key !== this.key)
+            this.offset = 0;
+        this.key = key;
+        this.content = content;
+        this.capacity = Math.max(0, capacity);
+        this.offset = Math.min(this.offset, Math.max(0, content.length - this.capacity));
+        return content.slice(this.offset, this.offset + this.capacity);
+    }
+    scroll(delta: number) {
+        this.offset = Math.max(0, Math.min(Math.max(0, this.content.length - this.capacity), this.offset + delta));
     }
 }

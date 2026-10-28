@@ -19,7 +19,7 @@ export class BleQueue {
     private lastTextAt = 0;
     private hushUntil = 0;
     private wakeTimer: number | null = null;
-    onError: (key: string, err: unknown) => void = (key, err) => console.warn(`[ble] ${key}`, err);
+    onError: (key: string, err: unknown) => void = (_key, _err) => void 0;
     enqueue(key: string, lane: Lane, run: () => Promise<unknown>, timeoutMs = TIMEOUT_MS[lane], hot = lane === 'text') {
         this.pending.delete(key);
         const channel = lane === 'text' ? key : lane;

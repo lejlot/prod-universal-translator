@@ -1,15 +1,17 @@
-import { AudioInputSource, AudioSpeakerRole, ImageRawDataUpdateResult, OsEventTypeList, StartUpPageCreateResult, type CreateStartUpPageContainer, type DeviceInfo, type DeviceStatus, List_ItemEvent, Sys_ItemEvent, Text_ItemEvent, type EvenHubEvent, type RebuildPageContainer, } from '@evenrealities/even_hub_sdk';
+import { AudioInputSource, AudioSpeakerRole, ImageRawDataUpdateResult, OsEventTypeList, StartUpPageCreateResult, type AppLocation, type AppLocationOptions, type CreateStartUpPageContainer, type DeviceInfo, type DeviceStatus, List_ItemEvent, Sys_ItemEvent, Text_ItemEvent, type EvenHubEvent, type RebuildPageContainer, } from '@evenrealities/even_hub_sdk';
 import { Emitter } from '../core/emitter';
 import type { Host } from '../core/host';
 export class BrowserHost implements Host {
     readonly listIndex = new Emitter<number>();
     private hub = new Set<(e: EvenHubEvent) => void>();
+    private locationListeners = new Set<(l: AppLocation) => void>();
     private listLength = 0;
     private index = 0;
     private mic: {
         ctx: AudioContext;
         stream: MediaStream;
     } | null = null;
+    private watchId: number | null = null;
     private holding = false;
     constructor() {
         window.addEventListener('keydown', e => this.onKey(e, true));
@@ -146,7 +148,7 @@ export class BrowserHost implements Host {
             return true;
         }
         catch (err) {
-            console.warn('Microphone unavailable', err);
+            void 0;
             return false;
         }
     }
@@ -157,10 +159,47 @@ export class BrowserHost implements Host {
     async getLocalStorage(key: string) {
         return localStorage.getItem(key) ?? '';
     }
+    async getAppLocation(options?: AppLocationOptions): Promise<AppLocation | null> {
+        return new Promise(resolve => {
+            if (!navigator.geolocation)
+                return resolve(null);
+            navigator.geolocation.getCurrentPosition(p => resolve(fromPosition(p)), () => resolve(null), { enableHighAccuracy: true, timeout: options?.timeoutMs ?? 8000 });
+        });
+    }
+    async startAppLocationUpdates() {
+        if (this.watchId !== null || !navigator.geolocation)
+            return true;
+        this.watchId = navigator.geolocation.watchPosition(p => {
+            const loc = fromPosition(p);
+            for (const fn of this.locationListeners)
+                fn(loc);
+        }, () => { }, { enableHighAccuracy: true });
+        return true;
+    }
+    async stopAppLocationUpdates() {
+        if (this.watchId !== null)
+            navigator.geolocation.clearWatch(this.watchId);
+        this.watchId = null;
+        return true;
+    }
+    onAppLocationChanged(cb: (l: AppLocation) => void) {
+        this.locationListeners.add(cb);
+        return () => this.locationListeners.delete(cb);
+    }
     onDeviceStatusChanged(_cb: (s: DeviceStatus) => void) {
         return () => { };
     }
     async getDeviceInfo(): Promise<DeviceInfo | null> {
         return null;
     }
+}
+function fromPosition(p: GeolocationPosition): AppLocation {
+    return {
+        latitude: p.coords.latitude,
+        longitude: p.coords.longitude,
+        accuracy: p.coords.accuracy,
+        heading: p.coords.heading ?? undefined,
+        speed: p.coords.speed ?? undefined,
+        timestamp: p.timestamp,
+    };
 }

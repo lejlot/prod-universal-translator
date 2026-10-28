@@ -14,7 +14,7 @@ export class Store {
             return { ...fallback, ...JSON.parse(raw) } as T;
         }
         catch (err) {
-            console.warn(`[store] load ${key}`, err);
+            void 0;
             return fallback;
         }
     }

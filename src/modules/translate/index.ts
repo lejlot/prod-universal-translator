@@ -1,5 +1,5 @@
 import { Emitter } from '../../core/emitter';
-import { fitLine, ScrollBox, wrapMax } from '../../core/textbox';
+import { ReadingBox, ScrollBox, wrap } from '../../core/textbox';
 import type { SettingsStore } from '../../core/settings';
 import type { Shell } from '../../core/shell';
 import type { Speech } from '../../core/speech';
@@ -10,6 +10,7 @@ import type { ClaudeService, Reply } from '../../services/claude';
 import type { SttState } from '../../services/soniox';
 import type { Row } from '../../views';
 import { Transcript } from './transcript';
+import { VoiceSession } from './voice';
 type Mode = 'live' | 'loading' | 'replies';
 const SILENCE_MS = 20000;
 const REPLIES_MS = 20000;
@@ -21,6 +22,7 @@ export class TranslateModule implements HudModule {
     readonly title = 'Translate';
     readonly changed = new Emitter();
     readonly transcript: Transcript;
+    readonly voice: VoiceSession;
     mode: Mode = 'live';
     replies: Reply[] = [];
     notice = '';
@@ -28,6 +30,7 @@ export class TranslateModule implements HudModule {
     sttDetail = '';
     private lastSpeechAt = 0;
     private speechSeq = 0;
+    private replyRequest = 0;
     private repliesSeq = -1;
     private visibleUntil = 0;
     private hideTimer: number | null = null;
@@ -39,19 +42,45 @@ export class TranslateModule implements HudModule {
     private inflight: {
         seq: number;
         replies: Promise<Reply[]>;
+        abort: AbortController;
     } | null = null;
     private ready: {
         seq: number;
         replies: Reply[];
     } | null = null;
     readonly boxes = { orig: new ScrollBox(), eng: new ScrollBox() };
-    constructor(private shell: Shell, private speech: Speech, private claude: ClaudeService, settings: SettingsStore, private store: Store) {
-        this.transcript = new Transcript('en', settings.get().sourceLang);
+    private reading = { top: new ReadingBox<Row>(), answer: new ReadingBox<Row>() };
+    constructor(private shell: Shell, private speech: Speech, private claude: ClaudeService, private settings: SettingsStore, private store: Store, context: () => Promise<string> = async () => 'Location unavailable') {
+        this.transcript = new Transcript(settings.get().mainLang, settings.get().sourceLang);
         this.transcript.filter = t => !speech.claims(t);
+        this.voice = new VoiceSession(speech, claude, settings, context);
+        this.voice.changed.on(() => { this.refresh(); this.shell.invalidate('shell.header'); });
+        let languages = `${settings.get().mainLang}:${settings.get().sourceLang}`;
+        let shareLocation = settings.get().shareLocation;
+        settings.changed.on(s => {
+            if (shareLocation !== s.shareLocation) {
+                shareLocation = s.shareLocation;
+                if (this.voice.kind === 'chat')
+                    this.setLive(false);
+            }
+            const next = `${s.mainLang}:${s.sourceLang}`;
+            if (next === languages)
+                return;
+            const wasLive = this.live;
+            languages = next;
+            this.voice.stop();
+            this.transcript.configure(s.mainLang, s.sourceLang);
+            this.clear();
+            this.setLive(wasLive);
+        });
         speech.responses.on(resp => {
+            if (!this.live || (this.voice.kind && this.voice.phase !== 'result' && this.voice.phase !== 'error'))
+                return;
             if (!this.speaking)
                 this.transcript.markSegment();
             if (this.transcript.apply(resp)) {
+                if (this.voice.kind === 'reverse' && this.voice.phase === 'result')
+                    this.voice.stop();
                 this.lastSpeechAt = Date.now();
                 this.speechSeq++;
                 if (this.showingReplies && this.saidAReply())
@@ -79,10 +108,21 @@ export class TranslateModule implements HudModule {
         this.speech.resume();
     }
     stop() {
+        this.replyRequest++;
+        this.cancelReplies();
+        this.voice.stop();
         this.speech.setTranslating(false);
+        if (this.prefetchTimer !== null)
+            window.clearTimeout(this.prefetchTimer);
+        if (this.hideTimer !== null)
+            window.clearTimeout(this.hideTimer);
+        if (this.repliesTimer !== null)
+            window.clearTimeout(this.repliesTimer);
+        this.speechSeq++;
+        this.mode = 'live';
     }
     get live() {
-        return this.speech.isTranslating;
+        return this.voice.kind === 'reverse' || this.speech.isTranslating;
     }
     get speaking() {
         return Date.now() - this.lastSpeechAt < SILENCE_MS;
@@ -130,6 +170,17 @@ export class TranslateModule implements HudModule {
     onShortcut(g: Gesture): boolean {
         if (g.kind === 'release')
             return this.swallowRelease();
+        if (g.kind === 'double') {
+            if (this.voice.kind === 'chat') {
+                this.setLive(false);
+                this.shell.exit();
+            }
+            else if (this.live)
+                this.setLive(false);
+            else
+                this.shell.exit();
+            return true;
+        }
         if (g.kind !== 'hold' && g.kind !== 'pinch')
             return false;
         if (g.kind === 'hold')
@@ -137,8 +188,7 @@ export class TranslateModule implements HudModule {
         if (Date.now() - this.toggledAt < TOGGLE_DEBOUNCE_MS)
             return true;
         this.toggledAt = Date.now();
-        this.setLive(!this.live);
-        this.shell.flash(this.live ? 'LIVE' : 'PAUSED');
+        this.startVoice();
         return true;
     }
     private swallowRelease(): boolean {
@@ -147,41 +197,75 @@ export class TranslateModule implements HudModule {
         return was;
     }
     onGesture(g: Gesture): boolean {
+        if (g.kind === 'up' || g.kind === 'down') {
+            const delta = g.kind === 'up' ? -1 : 1;
+            if (this.voice.kind) {
+                this.reading.top.scroll(delta);
+                this.reading.answer.scroll(delta);
+            }
+            else {
+                if (this.showingReplies || this.notice || this.sttState === 'error')
+                    this.reading.top.scroll(delta);
+                else
+                    this.boxes.orig.scroll(delta);
+                this.boxes.eng.scroll(delta);
+                if (this.showingReplies)
+                    this.repliesUntil = Date.now() + REPLIES_MS;
+                this.keepVisible();
+            }
+            this.refresh();
+            return true;
+        }
         if (g.kind !== 'tap')
             return false;
-        this.tap();
+        if (this.voice.kind && this.voice.phase === 'listening')
+            this.voice.confirm();
+        else if (this.voice.kind && this.voice.phase === 'thinking')
+            return true;
+        else if (this.voice.kind && this.voice.phase === 'error')
+            this.startVoice();
+        else if (this.voice.kind === 'chat')
+            this.startVoice();
+        else if (this.voice.kind === 'reverse') {
+            this.voice.stop();
+            this.speech.setTranslating(true);
+            this.refresh();
+        }
+        else if (!this.live)
+            this.setLive(true);
+        else {
+            this.tap();
+        }
         return true;
+    }
+    startVoice() {
+        if (this.voice.kind && this.voice.phase === 'listening')
+            return;
+        if (!this.settings.get().sonioxKey || !this.claude.configured)
+            return this.flash('Add Soniox and Anthropic keys in phone settings for voice input.');
+        const kind = this.voice.kind ?? (this.live ? 'reverse' : 'chat');
+        this.mode = 'live';
+        this.replyRequest++;
+        this.cancelReplies();
+        this.notice = '';
+        this.speechSeq++;
+        this.ready = null;
+        if (this.prefetchTimer !== null)
+            window.clearTimeout(this.prefetchTimer);
+        void this.voice.start(kind, this.transcript.partnerLang, kind === 'chat');
     }
     private tap() {
         if (this.mode === 'loading')
             return;
-        const stale = this.repliesSeq !== this.speechSeq;
-        if (!this.visible && !this.notice) {
-            if (this.transcript.isEmpty && !this.replies.length)
-                return;
-            if (this.mode === 'replies' && !stale)
-                return this.showReplies(this.replies, this.repliesSeq);
-            this.keepVisible();
-            if (this.mode === 'replies')
-                return void this.suggestReplies(false);
-            return this.refresh();
-        }
-        if (stale) {
-            this.keepVisible();
-            return void this.suggestReplies(false);
-        }
-        if (!this.showingReplies && this.replies.length)
-            return this.showReplies(this.replies, this.repliesSeq);
-        this.mode = 'live';
         this.keepVisible();
-        this.refresh();
+        void this.suggestReplies(false);
     }
     private schedulePrefetch() {
         if (this.prefetchTimer !== null)
             window.clearTimeout(this.prefetchTimer);
         this.prefetchTimer = window.setTimeout(() => {
             this.prefetchTimer = null;
-            if (!this.live || !this.claude.configured || this.transcript.isEmpty || this.repliesSeq === this.speechSeq)
+            if (!this.live || this.voice.kind || !this.claude.configured || this.transcript.isEmpty || this.repliesSeq === this.speechSeq)
                 return;
             const seq = this.speechSeq;
             this.fetchReplies(seq)
@@ -201,19 +285,26 @@ export class TranslateModule implements HudModule {
     private fetchReplies(seq: number): Promise<Reply[]> {
         if (this.inflight?.seq === seq)
             return this.inflight.replies;
+        this.cancelReplies();
+        const abort = new AbortController();
         const snap = this.transcript.snapshot();
         const replies = this.claude.suggestReplies({
             original: snap.original.slice(-700),
             english: snap.english.slice(-700),
             lang: snap.partnerLang,
-        });
-        const entry = { seq, replies };
+            mainLang: this.settings.get().mainLang,
+        }, abort.signal);
+        const entry = { seq, replies, abort };
         this.inflight = entry;
         void replies.finally(() => {
             if (this.inflight === entry)
                 this.inflight = null;
         }).catch(() => { });
         return replies;
+    }
+    private cancelReplies() {
+        this.inflight?.abort.abort();
+        this.inflight = null;
     }
     actions(): Action[] {
         return [
@@ -226,9 +317,12 @@ export class TranslateModule implements HudModule {
                 run: () => this.setLive(!this.live),
             },
             { id: 'tr.clear', label: 'Clear transcript', menuLabel: 'Clear transcript', inMenu: true, run: () => this.clear() },
+            { id: 'tr.voice', label: 'Voice input', menuLabel: 'Voice input', inMenu: true, run: () => this.startVoice() },
         ];
     }
     badge(): string {
+        if (this.voice.kind)
+            return this.voice.phase === 'error' ? '! VOICE' : this.voice.phase === 'thinking' ? 'THINKING' : this.voice.kind === 'chat' ? 'CLAUDE' : this.voice.phase === 'result' ? 'SAY' : 'SPEAK';
         if (this.speech.listening)
             return '';
         if (!this.live)
@@ -238,15 +332,31 @@ export class TranslateModule implements HudModule {
         return '';
     }
     info(): string {
-        return this.live ? `${this.transcript.partnerLang.toUpperCase()}›EN` : '';
+        const main = this.settings.get().mainLang.toUpperCase();
+        const partner = this.transcript.partnerLang.toUpperCase();
+        return this.voice.kind === 'reverse' ? `${main}›${partner}` : this.live ? `${partner}›${main}` : '';
     }
     setLive(on: boolean) {
+        this.replyRequest++;
+        this.cancelReplies();
+        this.voice.stop();
+        this.mode = 'live';
+        this.speechSeq++;
+        this.ready = null;
+        this.notice = '';
+        if (this.prefetchTimer !== null)
+            window.clearTimeout(this.prefetchTimer);
         this.speech.setTranslating(on);
         this.store.save('translate', { paused: !on });
         this.refresh();
         this.shell.invalidate('shell.header');
     }
     clear() {
+        this.replyRequest++;
+        this.cancelReplies();
+        const wasLive = this.live;
+        this.voice.stop();
+        this.speech.setTranslating(wasLive);
         this.transcript.clear();
         this.boxes.orig.reset();
         this.boxes.eng.reset();
@@ -262,6 +372,8 @@ export class TranslateModule implements HudModule {
         this.refresh();
     }
     async suggestReplies(fresh = true) {
+        if (!this.live || this.voice.kind)
+            return;
         if (this.mode === 'loading')
             return;
         if (!this.claude.configured)
@@ -269,23 +381,31 @@ export class TranslateModule implements HudModule {
         if (this.transcript.isEmpty)
             return this.flash('Nothing to reply to yet.');
         const seq = this.speechSeq;
+        const request = ++this.replyRequest;
         if (!fresh && this.ready?.seq === seq) {
             return this.showReplies(this.ready.replies, seq);
         }
         if (fresh && this.inflight?.seq === seq)
-            this.inflight = null;
+            this.cancelReplies();
         this.mode = 'loading';
         this.keepVisible();
         this.refresh();
         try {
             const replies = await this.fetchReplies(seq);
-            if (this.mode !== 'loading')
+            if (request !== this.replyRequest)
                 return;
+            if (this.mode !== 'loading' || seq !== this.speechSeq) {
+                if (this.mode === 'loading') {
+                    this.mode = 'live';
+                    this.refresh();
+                }
+                return;
+            }
             this.ready = { seq, replies };
             this.showReplies(replies, seq);
         }
         catch (err) {
-            if (this.mode !== 'loading')
+            if (this.mode !== 'loading' || request !== this.replyRequest)
                 return;
             this.mode = 'live';
             this.flash(`Replies failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -305,17 +425,24 @@ export class TranslateModule implements HudModule {
         this.changed.emit();
     }
     topRows(width: number, rows: number): Row[] {
+        const read = (text: string, layer: 'dim' | 'bright') => this.reading.top.lines(text, wrap(text, width, textWidth).map(l => ({ [layer]: l.text })), rows);
+        if (this.voice.kind)
+            return read(this.voice.error || this.voice.heard || (this.voice.phase === 'thinking' ? 'Thinking…' : 'Speak now…'), 'dim');
         if (this.notice)
-            return wrapMax(this.notice, width, rows, textWidth).map(bright => ({ bright }));
+            return read(this.notice, 'bright');
         if (this.mode === 'loading')
             return [{ bright: '» …' }];
         if (this.showingReplies)
-            return replyRows(this.replies.slice(0, rows), width);
+            return this.reading.top.lines(JSON.stringify(this.replies), replyRows(this.replies, width), rows);
         if (this.sttState === 'error')
-            return wrapMax(`! ${this.sttDetail || 'Speech service error'}`, width, rows, textWidth).map(dim => ({ dim }));
+            return read(`! ${this.sttDetail || 'Speech service error'}`, 'dim');
         return this.box('orig', width, rows).map(dim => ({ dim }));
     }
     englishRows(width: number, rows: number): Row[] {
+        if (this.voice.kind) {
+            const text = this.voice.answer || (this.voice.phase === 'thinking' ? '…' : '');
+            return this.reading.answer.lines(`${this.voice.answerVersion}:${text}`, wrap(text, width, textWidth).map(l => ({ bright: l.text })), rows);
+        }
         return this.box('eng', width, rows).map(bright => ({ bright }));
     }
     box(which: 'orig' | 'eng', width: number, rows: number): string[] {
@@ -329,18 +456,22 @@ export class TranslateModule implements HudModule {
     }
 }
 function replyRows(replies: Reply[], width: number): Row[] {
-    const said = replies.map(r => fitLine(`» ${r.text}`, width, textWidth));
+    const said = replies.map(r => `» ${r.text}`);
     const space = textWidth(' ');
     const after = (text: string) => Math.ceil((textWidth(text) + 2 * space) / space);
     const column = Math.max(...said.map(after));
     const roomAt = (at: number) => width - at * space - textWidth('╱ ');
     const aligned = roomAt(column) >= MIN_GLOSS_PX;
-    return replies.map((r, i) => {
+    return replies.flatMap((r, i): Row[] => {
         const at = aligned ? column : after(said[i]);
         const room = roomAt(at);
-        if (room < MIN_GLOSS_PX || !r.english.trim())
-            return { bright: said[i] };
-        return { bright: said[i], dim: `${' '.repeat(at)}╱ ${fitLine(r.english, room, textWidth)}` };
+        if (textWidth(said[i]) <= width && room >= MIN_GLOSS_PX && textWidth(r.english) <= room) {
+            return [{ bright: said[i], ...(r.english.trim() ? { dim: `${' '.repeat(at)}╱ ${r.english}` } : {}) }];
+        }
+        return [
+            ...wrap(said[i], width, textWidth).map(l => ({ bright: l.text })),
+            ...wrap(r.english.trim() ? `╱ ${r.english}` : '', width, textWidth).map(l => ({ dim: l.text })),
+        ];
     });
 }
 function words(text: string): Set<string> {

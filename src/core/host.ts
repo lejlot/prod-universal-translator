@@ -1,5 +1,5 @@
 import { waitForEvenAppBridge, type EvenAppBridge } from '@evenrealities/even_hub_sdk';
-export type Host = Pick<EvenAppBridge, 'createStartUpPageContainer' | 'rebuildPageContainer' | 'textContainerUpgrade' | 'updateImageRawData' | 'shutDownPageContainer' | 'audioControl' | 'onEvenHubEvent' | 'setLocalStorage' | 'getLocalStorage' | 'onDeviceStatusChanged' | 'getDeviceInfo'>;
+export type Host = Pick<EvenAppBridge, 'createStartUpPageContainer' | 'rebuildPageContainer' | 'textContainerUpgrade' | 'updateImageRawData' | 'shutDownPageContainer' | 'audioControl' | 'onEvenHubEvent' | 'setLocalStorage' | 'getLocalStorage' | 'getAppLocation' | 'startAppLocationUpdates' | 'stopAppLocationUpdates' | 'onAppLocationChanged' | 'onDeviceStatusChanged' | 'getDeviceInfo'>;
 export interface HostHandle {
     host: Host;
     native: boolean;

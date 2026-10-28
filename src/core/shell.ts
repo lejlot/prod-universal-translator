@@ -51,6 +51,7 @@ interface Mounted {
     menuActions: Action[];
 }
 export class Shell {
+    private pendingTap: number | null = null;
     readonly mirror = new Emitter<MirrorEvent>();
     readonly lifecycle = new Emitter<Lifecycle>();
     readonly ready: Promise<void>;
@@ -206,12 +207,12 @@ export class Shell {
                 this.markReady();
             }
             else
-                console.error('[shell] createStartUpPageContainer failed:', result);
+                void 0;
         }
         else {
             ok = await this.host.rebuildPageContainer(new RebuildPageContainer(page));
             if (!ok)
-                console.error('[shell] rebuildPageContainer failed');
+                void 0;
         }
         if (!ok)
             return;
@@ -278,7 +279,7 @@ export class Shell {
             if (bytes && m === this.mounted)
                 this.sendImage(panel, m, bytes);
         })
-            .catch(err => console.warn('[shell] image', panel.id, err))
+            .catch(_err => void 0)
             .finally(() => {
             m.drawing.delete(panel.id);
             if (m.redraw.delete(panel.id) && m === this.mounted)
@@ -298,7 +299,7 @@ export class Shell {
                 this.mirror.emit({ kind: 'image', id: panel.id, bytes });
             }
             else {
-                console.warn('[shell] image', panel.id, result);
+                void 0;
             }
         });
     }
@@ -308,7 +309,7 @@ export class Shell {
             return sanitize(provider?.text?.(ctx) ?? '');
         }
         catch (err) {
-            console.error('[shell] provider', ctx.panel.source, err);
+            void 0;
             return '';
         }
     }
@@ -381,6 +382,10 @@ export class Shell {
         if (!signal)
             return;
         if (signal.type === 'lifecycle') {
+            if (this.pendingTap !== null) {
+                window.clearTimeout(this.pendingTap);
+                this.pendingTap = null;
+            }
             this.lifecycle.emit(signal.lifecycle);
             return;
         }
@@ -395,8 +400,19 @@ export class Shell {
             return;
         if (g.kind === 'up' || g.kind === 'down')
             this.lastSwipeAt = now;
-        if ((g.kind === 'tap' || g.kind === 'double') && now - this.lastSwipeAt < SWIPE_TAP_GUARD_MS)
+        if (g.kind === 'tap' && now - this.lastSwipeAt < SWIPE_TAP_GUARD_MS)
             return;
+        if (this.pendingTap !== null) {
+            window.clearTimeout(this.pendingTap);
+            this.pendingTap = null;
+        }
+        if (g.kind === 'tap') {
+            this.pendingTap = window.setTimeout(() => {
+                this.pendingTap = null;
+                this.dispatch(g);
+            }, 350);
+            return;
+        }
         this.dispatch(g);
     }
     runMenuItem(itemId: number) {

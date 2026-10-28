@@ -14,6 +14,7 @@ interface Window {
 }
 interface ActiveCommand {
     mode: 'hold' | 'auto';
+    selfOnly: boolean;
     window: Window;
     finals: Map<string, string>;
     tail: string;
@@ -41,7 +42,8 @@ export class Speech {
     constructor(private audio: AudioHub, private settings: SettingsStore) {
         audio.frames.on(frame => {
             const muteSelf = this.settings.get().ignoreOwnVoice && frame.role === AudioSpeakerRole.Self && !this.active;
-            const pcm = muteSelf ? new Uint8Array(frame.pcm.byteLength) : frame.pcm;
+            const muteOther = this.active?.selfOnly && frame.role !== AudioSpeakerRole.Self;
+            const pcm = muteSelf || muteOther ? new Uint8Array(frame.pcm.byteLength) : frame.pcm;
             this.heardMs += pcm.byteLength / 32;
             this.tickStreamClock();
             const wasOpen = this.gate.open;
@@ -92,6 +94,10 @@ export class Speech {
     }
     setTranslating(on: boolean) {
         this.translating = on;
+        if (!on) {
+            this.gate.close();
+            this.gate.takePreroll();
+        }
         this.sync();
     }
     resume() {
@@ -106,11 +112,12 @@ export class Speech {
             return false;
         return this.windows.some(w => at >= w.start - LEAD_MS && (w.end === null || at <= w.end + TRAIL_MS));
     }
-    beginCommand(mode: 'hold' | 'auto') {
+    beginCommand(mode: 'hold' | 'auto', selfOnly = false) {
         if (this.active)
             return;
+        this.gate.takePreroll();
         const window: Window = { start: 0, end: null };
-        this.active = { mode, window, finals: new Map(), tail: '', endpointSeen: false, finSeen: false };
+        this.active = { mode, selfOnly, window, finals: new Map(), tail: '', endpointSeen: false, finSeen: false };
         this.sync();
         window.start = this.stt.audioMs;
         if (!this.windows.includes(window))
@@ -119,9 +126,16 @@ export class Speech {
             this.windows.shift();
         this.command.emit({ mode, text: '' });
     }
+    submitCommand() {
+        if (this.active)
+            this.active.endpointSeen = true;
+    }
     async waitForPause(maxMs = 9000): Promise<void> {
+        const cmd = this.active;
         const until = Date.now() + maxMs;
-        while (this.active && !this.active.endpointSeen && Date.now() < until) {
+        while (cmd && this.active === cmd && !cmd.endpointSeen && Date.now() < until) {
+            if (this.stt.current === 'error')
+                throw new Error('Speech connection failed. Check the phone settings.');
             await new Promise(r => setTimeout(r, 150));
         }
     }
@@ -132,10 +146,14 @@ export class Speech {
         cmd.window.end = this.stt.audioMs;
         this.stt.finalize();
         const until = Date.now() + 1800;
-        while (!cmd.finSeen && Date.now() < until)
+        while (this.active === cmd && !cmd.finSeen && Date.now() < until)
             await new Promise(r => setTimeout(r, 100));
+        if (this.active !== cmd)
+            return '';
         const text = commandText(cmd);
         this.active = null;
+        this.gate.close();
+        this.gate.takePreroll();
         this.sync();
         this.command.emit(null);
         return text;
@@ -145,6 +163,8 @@ export class Speech {
             return;
         this.active.window.end = this.stt.audioMs;
         this.active = null;
+        this.gate.close();
+        this.gate.takePreroll();
         this.sync();
         this.command.emit(null);
     }
@@ -177,7 +197,7 @@ export class Speech {
     private sync() {
         const s = this.settings.get();
         const need = this.translating || !!this.active;
-        this.audio.setSource(s.micSource);
+        this.audio.setSource(this.active?.selfOnly ? 'glasses' : s.micSource);
         if (need) {
             if (s.sonioxKey && !this.audio.on)
                 this.audio.start();
@@ -202,8 +222,8 @@ export class Speech {
         }
         this.stt.start({
             apiKey: s.sonioxKey,
-            languageHints: [...new Set([s.sourceLang, 'en'])],
-            targetLanguage: 'en',
+            languageHints: [...new Set(this.active ? [s.mainLang] : [s.sourceLang, s.mainLang])],
+            targetLanguage: this.active ? undefined : s.mainLang,
         });
     }
     private closeStream() {

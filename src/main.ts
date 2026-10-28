@@ -6,6 +6,7 @@ import { Shell } from './core/shell';
 import { Speech } from './core/speech';
 import { Store } from './core/store';
 import { Balance } from './core/balance';
+import { conversationContext } from './core/context';
 import type { HudModule } from './core/types';
 import type { BrowserHost } from './browser/host';
 import { TranslateModule } from './modules/translate';
@@ -22,7 +23,7 @@ const shell = new Shell(host, queue);
 const audio = new AudioHub(host, queue);
 const speech = new Speech(audio, settings);
 const claude = new ClaudeService(() => settings.get().anthropicKey, () => settings.get().claudeModel);
-const translate = new TranslateModule(shell, speech, claude, settings, store);
+const translate = new TranslateModule(shell, speech, claude, settings, store, () => conversationContext(host, settings.get().shareLocation));
 const balance = new Balance(settings);
 claude.credit.on(ok => balance.setClaudeCredit(ok));
 speech.stt.state.on(({ state }) => {
@@ -84,7 +85,7 @@ for (const m of modules) {
         await m.start?.();
     }
     catch (err) {
-        console.error(`[${m.id}] start failed`, err);
+        void 0;
     }
 }
 let stopped = false;
@@ -110,4 +111,4 @@ document.addEventListener('visibilitychange', () => {
         store.flush();
 });
 window.addEventListener('beforeunload', shutdown);
-console.log(`[hud] ready (${native ? 'Even host' : 'browser preview'})`);
+void 0;

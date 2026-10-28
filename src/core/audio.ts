@@ -53,7 +53,7 @@ export class AudioHub {
             this.open = open && ok;
             this.state.emit(this.open);
             if (!ok)
-                console.warn('[audio] audioControl failed', open, src);
+                void 0;
         });
     }
 }

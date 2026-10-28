@@ -8,6 +8,7 @@ import type { Balance } from '../core/balance';
 import type { BrowserHost } from '../browser/host';
 import { checkAnthropic, checkSoniox, checkSonioxOrg, type KeyCheck } from '../services/keycheck';
 import type { TranslateModule } from '../modules/translate';
+import { LANGUAGE_OPTIONS, langLabel } from '../core/lang';
 export interface PhoneDeps {
     shell: Shell;
     translate: TranslateModule;
@@ -119,8 +120,8 @@ function mirrorCard(d: PhoneDeps): HTMLElement {
     const send = (kind: GestureKind) => {
         d.shell.dispatch({ kind, source: 'unknown' });
     };
-    const hold = h('button', { title: 'Long-press (pause / resume translation)', onclick: () => (send('hold'), send('release')) }, 'Hold');
-    return h('section', { class: 'card' }, h('h2', {}, 'Glasses'), wrap, h('div', { class: 'controls' }, h('button', { onclick: () => send('tap'), title: 'Tap (ring click)' }, 'Tap'), hold), menuRow);
+    const hold = h('button', { title: 'Long-press: translate what I say; while paused, talk to Claude', onclick: () => (send('hold'), send('release')) }, 'Hold');
+    return h('section', { class: 'card' }, h('h2', {}, 'Glasses'), wrap, h('div', { class: 'controls' }, h('button', { onclick: () => send('tap'), title: 'Click: yes / confirm speech / resume' }, 'Tap'), h('button', { onclick: () => send('double'), title: 'Double-tap: pause; while paused or in Claude, close' }, 'Double tap'), hold, h('button', { onclick: () => send('up'), title: 'Read previous lines' }, 'Scroll up'), h('button', { onclick: () => send('down'), title: 'Read next lines' }, 'Scroll down')), menuRow, h('p', { class: 'hint' }, 'Click: yes / confirm. Press: listen. Double-click: no / stop / exit. Scroll: read earlier or later lines. While translating, click for replies and press to translate your speech. While paused, click to resume and press to talk to Claude. In voice mode, click submits what you said; a speech pause also submits automatically. Claude listens only to your voice through the glasses. Double-click pauses translation or closes a paused app or Claude conversation.'));
 }
 function translateCard(d: PhoneDeps): HTMLElement {
     const t = d.translate;
@@ -128,29 +129,33 @@ function translateCard(d: PhoneDeps): HTMLElement {
     const eng = h('div', { class: 'stream eng' });
     const replies = h('div', { class: 'replies' });
     const status = h('p', { class: 'muted status' });
+    const history = h('div', { class: 'voice-history', 'aria-label': 'Claude conversation' });
     const toggle = h('button', { onclick: () => t.setLive(!t.live) });
     const suggest = h('button', { class: 'primary', onclick: () => t.suggestReplies() }, 'Suggest replies');
     const render = () => {
-        orig.textContent = t.transcript.original;
-        eng.textContent = t.transcript.english;
+        orig.textContent = t.voice.kind ? t.voice.heard : t.transcript.original;
+        eng.textContent = t.voice.kind ? t.voice.answer : t.transcript.english;
+        orig.setAttribute('aria-label', t.voice.kind ? 'Your speech' : 'Original speech');
+        eng.setAttribute('aria-label', `${langLabel(t.voice.kind === 'reverse' ? t.transcript.partnerLang : d.settings.get().mainLang)} translation or response`);
         orig.scrollTop = orig.scrollHeight;
         eng.scrollTop = eng.scrollHeight;
         toggle.textContent = t.live ? 'Pause' : 'Resume';
-        suggest.toggleAttribute('disabled', t.mode === 'loading');
-        status.textContent = t.notice || (t.mode === 'loading' ? '…' : t.sttState === 'error' ? `! ${t.sttDetail}` : '');
+        suggest.toggleAttribute('disabled', t.mode === 'loading' || !t.live || !!t.voice.kind);
+        status.textContent = t.notice || t.voice.error || (t.voice.kind ? `${t.voice.kind === 'chat' ? 'Claude conversation' : 'Translate my speech'} · ${t.voice.phase}` : t.mode === 'loading' ? '…' : t.sttState === 'error' ? `! ${t.sttDetail}` : '');
+        history.replaceChildren(...t.voice.turns.map(turn => h('p', {}, h('strong', {}, turn.role === 'user' ? 'You: ' : 'Claude: '), turn.content)));
         replies.replaceChildren(...(t.mode === 'replies'
             ? t.replies.map(r => h('div', { class: 'reply' }, r.text, h('small', {}, r.english)))
             : []));
     };
     t.changed.on(render);
     render();
-    return h('section', { class: 'card' }, h('h2', {}, 'Conversation'), orig, eng, h('div', { class: 'row' }, suggest, toggle, h('button', { onclick: () => t.clear() }, 'Clear')), status, replies);
+    return h('section', { class: 'card' }, h('h2', {}, 'Conversation'), orig, eng, h('div', { class: 'row' }, suggest, toggle, h('button', { onclick: () => t.clear() }, 'Clear')), status, replies, history);
 }
 function selectFor<K extends keyof Settings>(d: PhoneDeps, key: K, options: [
     string,
     string
 ][]): HTMLSelectElement {
-    const sel = h('select', {}, ...options.map(([v, label]) => h('option', { value: v }, label))) as HTMLSelectElement;
+    const sel = h('select', { id: key }, ...options.map(([v, label]) => h('option', { value: v }, label))) as HTMLSelectElement;
     sel.value = String(d.settings.get()[key]);
     sel.addEventListener('change', () => d.settings.update({ [key]: sel.value } as Partial<Settings>));
     d.settings.changed.on(s => {
@@ -193,6 +198,9 @@ function checkRow(run: () => Promise<KeyCheck>): HTMLElement {
     return h('div', { class: 'row keycheck' }, btn, out);
 }
 function settingsCard(d: PhoneDeps): HTMLElement {
+    const shareLocation = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    shareLocation.checked = d.settings.get().shareLocation;
+    shareLocation.addEventListener('change', () => d.settings.update({ shareLocation: shareLocation.checked }));
     const own = h('input', { type: 'checkbox' }) as HTMLInputElement;
     own.checked = d.settings.get().ignoreOwnVoice;
     own.addEventListener('change', () => d.settings.update({ ignoreOwnVoice: own.checked }));
@@ -227,22 +235,11 @@ function settingsCard(d: PhoneDeps): HTMLElement {
     d.balance.changed.on(renderCredit);
     d.settings.changed.on(renderCredit);
     const s = d.settings.get();
-    return h('section', { class: 'card' }, h('details', { open: !s.sonioxKey || !s.sonioxOrgKey || !s.anthropicKey }, h('summary', {}, 'Settings & API keys'), h('label', {}, 'Soniox API key (speech + translation)'), secretFor(d, 'sonioxKey', 'From console.soniox.com'), checkRow(() => checkSoniox(d.settings.get().sonioxKey)), h('label', {}, 'Soniox organization key (only to show the prepaid balance)'), secretFor(d, 'sonioxOrgKey', 'snx_org_… from Settings › Organization API keys'), checkRow(() => checkSonioxOrg(d.settings.get().sonioxOrgKey)), h('label', {}, 'Anthropic API key (reply suggestions)'), secretFor(d, 'anthropicKey', 'sk-ant-…'), checkRow(() => checkAnthropic(d.settings.get().anthropicKey, d.settings.get().claudeModel)), h('label', {}, 'Claude model'), selectFor(d, 'claudeModel', [
+    return h('section', { class: 'card' }, h('details', { open: !s.sonioxKey || !s.sonioxOrgKey || !s.anthropicKey }, h('summary', {}, 'Settings & API keys'), h('label', {}, 'Soniox API key (speech + translation)'), secretFor(d, 'sonioxKey', 'From console.soniox.com'), checkRow(() => checkSoniox(d.settings.get().sonioxKey)), h('label', {}, 'Soniox organization key (only to show the prepaid balance)'), secretFor(d, 'sonioxOrgKey', 'snx_org_… from Settings › Organization API keys'), checkRow(() => checkSonioxOrg(d.settings.get().sonioxOrgKey)), h('label', {}, 'Anthropic API key (replies, voice translation and Claude conversation)'), secretFor(d, 'anthropicKey', 'sk-ant-…'), checkRow(() => checkAnthropic(d.settings.get().anthropicKey, d.settings.get().claudeModel)), h('label', {}, 'Claude model'), selectFor(d, 'claudeModel', [
         ['claude-opus-5-5', 'Claude Opus 5.5 (best)'],
         ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (faster)'],
         ['claude-haiku-5-5', 'Claude Haiku 5.5 (fastest)'],
-    ]), h('label', {}, 'Default language they speak (detection still runs)'), selectFor(d, 'sourceLang', [
-        ['es', 'Spanish'],
-        ['fr', 'French'],
-        ['it', 'Italian'],
-        ['pt', 'Portuguese'],
-        ['de', 'German'],
-        ['ca', 'Catalan'],
-        ['nl', 'Dutch'],
-        ['ja', 'Japanese'],
-        ['zh', 'Chinese'],
-        ['ko', 'Korean'],
-    ]), h('label', {}, 'Microphone'), selectFor(d, 'micSource', [
+    ]), h('label', { for: 'mainLang' }, 'Main language (translations, meanings and Claude answers)'), selectFor(d, 'mainLang', LANGUAGE_OPTIONS), h('label', { for: 'sourceLang' }, 'Default source language (automatic detection stays on)'), selectFor(d, 'sourceLang', LANGUAGE_OPTIONS), h('label', { class: 'check' }, shareLocation, 'Share current location with Claude in voice conversations'), h('p', { class: 'hint' }, 'Claude voice mode sends your spoken text, the current conversation, time and time zone to Anthropic. With location sharing enabled, it also sends a one-shot phone location when available. Location and Claude conversation history stay in memory only and are cleared when you stop.'), h('label', {}, 'Microphone'), selectFor(d, 'micSource', [
         ['glasses', 'Glasses (4-mic array)'],
         ['phone', 'Phone'],
     ]), h('label', { class: 'check' }, own, "Don't translate my own voice"), h('label', { class: 'check' }, gate, 'Only stream to Soniox while someone is talking'), credit, usage, h('p', { class: 'hint' }, 'Keys are stored in the Even app on this phone and sent only to Soniox and Anthropic.')));
